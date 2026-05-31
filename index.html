@@ -7,7 +7,29 @@
   <link rel="stylesheet" href="/src/style.css">
 </head>
 <body>
-  <h1>sdemux</h1>
+  <div id="app">
+    <div id="left-panel">
+      <div id="drop-zone">
+        <p class="drop-icon">🎵</p>
+        <p>Drop audio here</p>
+        <p class="hint">WAV / MP3</p>
+        <input type="file" id="file-input" accept="audio/wav,audio/mpeg,audio/mp3" hidden>
+      </div>
+      <div id="source-player" style="display:none">
+        <h3>Source</h3>
+        <audio id="source-audio" controls></audio>
+        <p id="source-info"></p>
+      </div>
+    </div>
+
+    <canvas id="wave-canvas"></canvas>
+
+    <div id="right-panel">
+      <div id="status"></div>
+      <div id="stem-cards"></div>
+      <button id="download-all" style="display:none">Download All (ZIP)</button>
+    </div>
+  </div>
   <script type="module" src="/src/main.js"></script>
 </body>
 </html>
