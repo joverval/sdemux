@@ -2,7 +2,7 @@
  * sdemux — browser-based audio stem separation
  */
 
-import { loadDemucsModel, separateStems, extractStems } from './demucs-loader.js';
+import { loadSpleeterModels, separateStems, extractStems } from './spleeter-loader.js';
 import JSZip from 'jszip';
 
 // ── DOM refs ──
@@ -110,58 +110,41 @@ function hideFreezeOverlay() {
   document.body.style.overflow = '';
 }
 
-// ── Merge AudioBuffers (sum across channels) ──
-function mergeAudioBuffers(buffers, ctx) {
-  if (buffers.length === 0) return null;
-  const first = buffers[0];
-  const out = ctx.createBuffer(first.numberOfChannels, first.length, first.sampleRate);
-  for (let c = 0; c < first.numberOfChannels; c++) {
-    const outCh = out.getChannelData(c);
-    for (const buf of buffers) {
-      const src = buf.getChannelData(c);
-      for (let i = 0; i < first.length; i++) outCh[i] += src[i];
-    }
-  }
-  return out;
-}
-
 // ── Processing ──
 async function processAudio(file, audioBuf) {
   try {
     const loadStartTime = performance.now();
     statusEl.textContent = 'Loading model... (this may take 30-60 seconds)';
 
-    modelSession = await loadDemucsModel((p) => {
+    modelSession = await loadSpleeterModels((p) => {
       if (p.stage === 'downloading') {
+        const name = p.model || '';
         const mb = ((p.received || 0) / 1024 / 1024).toFixed(0);
         const totalMb = ((p.total || 0) / 1024 / 1024).toFixed(0);
-        const speed = p.speedMBps || '?';
-        const eta = p.eta || '?';
-        statusEl.textContent = `Downloading model... ${mb}/${totalMb} MB (${p.percent}%) — ${speed} MB/s — ${eta} left`;
+        statusEl.textContent = `Downloading ${name}... ${mb}/${totalMb} MB (${p.percent}%)`;
       } else if (p.stage === 'loading') {
-        showFreezeOverlay('Loading model into memory...\nBrowser will be unresponsive for 30-60s\nDo not close this tab.');
-        statusEl.textContent = 'Creating ONNX session... browser will freeze briefly.';
+        showFreezeOverlay(`Loading ${p.model} model...\nBrowser will be unresponsive briefly\nDo not close this tab.`);
+        statusEl.textContent = `Creating ONNX session for ${p.model}...`;
       } else if (p.stage === 'ready') {
         hideFreezeOverlay();
         const elapsed = ((performance.now() - loadStartTime) / 1000).toFixed(0);
-        statusEl.textContent = `Model ready (${elapsed}s). Separating stems...`;
+        statusEl.textContent = `${p.model} ready (${elapsed}s).`;
       }
     });
 
-    // Separate 4 stems
+    // Separate 2 stems (vocals + accompaniment)
     const result = await separateStems(modelSession, audioBuf, audioBuf.sampleRate, (p) => {
-      statusEl.textContent = `Separating... chunk ${p.chunk}/${p.total}`;
+      const stages = { stft: 'Computing STFT...', inference: 'Running Spleeter...', masking: 'Computing masks...', istft: 'Reconstructing audio...' };
+      statusEl.textContent = stages[p.stage] || `Separating... ${p.chunk}/${p.total}`;
     });
 
-    // Extract raw 4 stems
+    // Extract 2 stems
     const ctx = getContext();
     const rawStems = extractStems(result, audioBuf.sampleRate, ctx);
 
-    // Merge drums+bass+other → instrumental, keep vocals
-    const instrumental = mergeAudioBuffers([rawStems.drums, rawStems.bass, rawStems.other], ctx);
     const stems = {
       vocals: rawStems.vocals,
-      instrumental: instrumental,
+      instrumental: rawStems.accompaniment,
     };
 
     showStems(stems);
