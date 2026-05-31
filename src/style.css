@@ -7,6 +7,28 @@ body {
   overflow: hidden;
 }
 
+/* Header */
+#app-header {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 1rem 1.25rem;
+  pointer-events: none;
+}
+.header-icon {
+  flex-shrink: 0;
+}
+.header-title {
+  font-size: 1.15rem;
+  font-weight: 600;
+  color: #a5b4fc;
+  letter-spacing: 0.02em;
+}
+
 #app {
   display: grid;
   grid-template-columns: 1fr 200px 1fr;
