@@ -30,6 +30,7 @@ const MODELS = {
 // GitHub Pages: no COOP/COEP → single-threaded WASM only
 ort.env.wasm.numThreads = 1;
 ort.env.wasm.simd = true;
+ort.env.wasm.wasmPaths = '/sdemux/assets/';
 ort.env.logLevel = 'warning';
 
 // ── Window ──
@@ -166,7 +167,7 @@ function istft(maskedReal, maskedImag, nbFrames) {
 
 // ── IndexedDB cache ──
 const DB_NAME = 'sdemux-spleeter-cache';
-const DB_VERSION = 1;
+const DB_VERSION = 2;  // bumped to clear stale cache from old URLs
 
 function openDB() {
   return new Promise((resolve, reject) => {
