@@ -167,7 +167,7 @@ function istft(maskedReal, maskedImag, nbFrames) {
 
 // ── IndexedDB cache ──
 const DB_NAME = 'sdemux-spleeter-cache';
-const DB_VERSION = 2;  // bumped to clear stale cache from old URLs
+const DB_VERSION = 3;  // bumped to clear potentially corrupted cache from pre-.mjs deployment
 
 function openDB() {
   return new Promise((resolve, reject) => {
