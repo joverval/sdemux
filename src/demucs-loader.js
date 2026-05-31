@@ -31,12 +31,10 @@ const MODEL_BINS = N_FFT / 2; // 2048 (drop Nyquist)
 const NORM = 1.0 / Math.sqrt(N_FFT);
 
 // Configure ONNX Runtime
-if (typeof crossOriginIsolated !== 'undefined' && crossOriginIsolated) {
-  ort.env.wasm.numThreads = Math.max(1, navigator.hardwareConcurrency - 2);
-} else {
-  ort.env.wasm.numThreads = 1;
-}
+// GitHub Pages doesn't serve COOP/COEP, so we're stuck with single-threaded WASM
+ort.env.wasm.numThreads = 1;
 ort.env.wasm.simd = true;
+ort.env.logLevel = 'verbose';
 
 /**
  * Periodic Hann window (matching C++ init_const_hann_window)
@@ -206,12 +204,13 @@ export async function loadDemucsModel(progressCallback) {
   const cached = await loadFromCache();
   if (cached) {
     progressCallback?.({ stage: 'loading', percent: 50 });
+    const t0 = performance.now();
     const session = await ort.InferenceSession.create(cached, {
       executionProviders: ['wasm'],
-      graphOptimizationLevel: 'all',
+      graphOptimizationLevel: 'basic',
     });
+    console.warn(`Demucs model loaded from cache in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
     progressCallback?.({ stage: 'ready', percent: 100 });
-    console.warn('Demucs model loaded from cache!');
     return session;
   }
 
@@ -254,13 +253,14 @@ export async function loadDemucsModel(progressCallback) {
 
   // 4. Create inference session
   progressCallback?.({ stage: 'loading', percent: 90 });
+  const t0 = performance.now();
   const session = await ort.InferenceSession.create(buf.buffer, {
     executionProviders: ['wasm'],
-    graphOptimizationLevel: 'all',
+    graphOptimizationLevel: 'basic',
   });
+  console.warn(`Demucs model loaded in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
 
   progressCallback?.({ stage: 'ready', percent: 100 });
-  console.warn('Demucs model loaded!');
   console.warn('Input names:', session.inputNames);
   console.warn('Output names:', session.outputNames);
   return session;

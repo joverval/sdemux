@@ -74,7 +74,8 @@ async function handleFile(file) {
 // ── Processing ──
 async function processAudio(file, audioBuf) {
   try {
-    statusEl.textContent = 'Loading model...';
+    const loadStartTime = performance.now();
+    statusEl.textContent = 'Loading model... (this may take 30-60 seconds)';
 
     startWaveAnimation();
 
@@ -85,11 +86,13 @@ async function processAudio(file, audioBuf) {
         const totalMb = ((p.total || 0) / 1024 / 1024).toFixed(1);
         statusEl.textContent = `Downloading model... ${mb} MB / ${totalMb} MB (${p.percent}%)`;
       } else if (p.stage === 'caching') {
-        statusEl.textContent = 'Caching model...';
+        statusEl.textContent = 'Saving model to browser storage...';
       } else if (p.stage === 'loading') {
-        statusEl.textContent = 'Loading model...';
+        const elapsed = ((performance.now() - loadStartTime) / 1000).toFixed(0);
+        statusEl.textContent = `Loading model into memory... ${elapsed}s`;
       } else if (p.stage === 'ready') {
-        statusEl.textContent = 'Separating stems...';
+        const elapsed = ((performance.now() - loadStartTime) / 1000).toFixed(0);
+        statusEl.textContent = `Model ready (${elapsed}s). Separating stems...`;
       }
     });
 
