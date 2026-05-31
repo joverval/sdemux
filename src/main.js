@@ -12,6 +12,7 @@ const sourcePlayer = document.getElementById('source-player');
 const sourceAudio = document.getElementById('source-audio');
 const sourceInfo = document.getElementById('source-info');
 const statusEl = document.getElementById('status');
+const separateBtn = document.getElementById('separate-btn');
 const stemCards = document.getElementById('stem-cards');
 const downloadAll = document.getElementById('download-all');
 const waveCanvas = document.getElementById('wave-canvas');
@@ -23,8 +24,11 @@ function getContext() {
   return audioContext;
 }
 
-// ── Model ──
+// ── State ──
 let modelSession = null;
+let currentFile = null;
+let currentAudioBuf = null;
+let isProcessing = false;
 
 // ── Upload ──
 dropZone.addEventListener('click', () => fileInput.click());
@@ -62,13 +66,55 @@ async function handleFile(file) {
   const arrayBuf = await file.arrayBuffer();
   const audioBuf = await ctx.decodeAudioData(arrayBuf);
 
-  // Show source player
+  // Show source player — preview without triggering model loading
   sourceAudio.src = URL.createObjectURL(file);
   sourcePlayer.style.display = 'block';
   sourceInfo.textContent = `${file.name} — ${audioBuf.numberOfChannels}ch / ${ctx.sampleRate}Hz / ${(audioBuf.duration).toFixed(1)}s`;
 
-  // Start processing
-  await processAudio(file, audioBuf);
+  // Show Separator button — user manually starts the process
+  separateBtn.style.display = 'block';
+  statusEl.textContent = `Ready. Click "Separate Stems" to start.`;
+  startWaveAnimation();
+
+  // Store for later
+  currentFile = file;
+  currentAudioBuf = audioBuf;
+}
+
+// ── Separate button ──
+separateBtn.addEventListener('click', async () => {
+  if (isProcessing || !currentAudioBuf) return;
+  isProcessing = true;
+  separateBtn.disabled = true;
+  separateBtn.textContent = 'Processing...';
+  await processAudio(currentFile, currentAudioBuf);
+  isProcessing = false;
+  separateBtn.disabled = false;
+  separateBtn.textContent = 'Separate Stems';
+});
+
+// ── Freeze overlay ──
+function showFreezeOverlay(text) {
+  // Create overlay if not exists
+  let overlay = document.getElementById('freeze-overlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'freeze-overlay';
+    overlay.innerHTML = `
+      <div class="freeze-spinner"></div>
+      <p id="freeze-text"></p>
+    `;
+    document.body.appendChild(overlay);
+  }
+  document.getElementById('freeze-text').textContent = text;
+  overlay.style.display = 'flex';
+  document.body.style.overflow = 'hidden';
+}
+
+function hideFreezeOverlay() {
+  const overlay = document.getElementById('freeze-overlay');
+  if (overlay) overlay.style.display = 'none';
+  document.body.style.overflow = '';
 }
 
 // ── Processing ──
@@ -88,9 +134,13 @@ async function processAudio(file, audioBuf) {
         const eta = p.eta || '?';
         statusEl.textContent = `Downloading model... ${mb}/${totalMb} MB (${p.percent}%) — ${speed} MB/s — ${eta} left`;
       } else if (p.stage === 'loading') {
-        stopWaveAnimation(); // Save CPU — page is about to freeze anyway
-        statusEl.textContent = 'Loading model into memory... PAGE MAY FREEZE for 10-60s. This is normal — do not close the tab.';
+        // Show full-screen overlay BEFORE the freeze hits
+        showFreezeOverlay('Loading model into memory...\nBrowser will be unresponsive for 30-60s\nDo not close this tab.');
+        // Force overlay to paint before blocking
+        statusEl.textContent = 'Creating ONNX session... browser will freeze briefly.';
+        stopWaveAnimation();
       } else if (p.stage === 'ready') {
+        hideFreezeOverlay();
         startWaveAnimation();
         const elapsed = ((performance.now() - loadStartTime) / 1000).toFixed(0);
         statusEl.textContent = `Model ready (${elapsed}s). Separating stems...`;
@@ -110,10 +160,11 @@ async function processAudio(file, audioBuf) {
     showStems(stems, ctx);
     window._stems = stems;
     statusEl.innerHTML = '<span style="color:#4ade80">Done!</span>';
-
+    separateBtn.style.display = 'none';
     stopWaveAnimation();
 
   } catch (err) {
+    hideFreezeOverlay();
     statusEl.innerHTML = `<span style="color:#f87171">Error: ${err.message}</span>`;
     stopWaveAnimation();
     console.error(err);

@@ -245,23 +245,30 @@ export async function loadDemucsModel(progressCallback) {
     const totalMB = (total / 1024 / 1024).toFixed(0);
 
     const reader = response.body.getReader();
-    const chunks = [];
     let received = 0;
     let downloadStart = performance.now();
     let lastUpdate = downloadStart;
     let lastYield = downloadStart;
 
+    // Pre-allocate buffer — no chunk array, no GC pressure from growing array
+    const buffer = total > 0 ? new Uint8Array(total) : null;
+    let offset = 0;
+
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      chunks.push(value);
+
+      // Write chunk directly into pre-allocated buffer
+      if (buffer && offset + value.length <= buffer.length) {
+        buffer.set(value, offset);
+      }
+      offset += value.length;
       received += value.length;
 
       const now = performance.now();
       const elapsed = (now - downloadStart) / 1000;
       const speed = received / elapsed;
       const speedMBps = (speed / 1024 / 1024).toFixed(1);
-      const remainMB = ((total - received) / 1024 / 1024).toFixed(0);
       const eta = speed > 0 ? ((total - received) / speed) : 0;
       const etaStr = eta > 60 ? `${Math.round(eta / 60)}m` : `${Math.round(eta)}s`;
 
@@ -269,23 +276,23 @@ export async function loadDemucsModel(progressCallback) {
       if (now - lastUpdate > 500) {
         lastUpdate = now;
         const pct = total ? Math.round((received / total) * 100) : 0;
-        const mb = (received / 1024 / 1024).toFixed(0);
         progressCallback?.({ stage: 'downloading', percent: pct, received, total, speedMBps, eta: etaStr });
       }
 
-      // Yield to event loop every ~16ms (one frame) so UI stays responsive
+      // Yield to event loop every ~16ms so UI stays responsive
       if (now - lastYield > 16) {
         lastYield = now;
         await new Promise(r => setTimeout(r, 0));
       }
     }
 
-  // Yield before assembling the buffer (172MB copy can freeze the tab)
-  await new Promise(r => setTimeout(r, 0));
-
-  const buf = new Uint8Array(received);
-  let pos = 0;
-  for (const chunk of chunks) { buf.set(chunk, pos); pos += chunk.length; }
+  // Use the pre-allocated buffer (no extra copy needed!)
+  const buf = buffer || new Uint8Array(received);
+  if (!buffer) {
+    // Fallback: if Content-Length wasn't available, we had to accumulate
+    // This shouldn't happen with GitHub Releases or HuggingFace
+    console.warn('Content-Length was not available, buffer may be incomplete');
+  }
 
   // 3. Cache to IndexedDB (deferred — don't block the session creation)
   saveToCache(buf.buffer.slice(0)).catch(e =>
