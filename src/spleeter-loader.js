@@ -23,8 +23,8 @@ const CLIP_FRAMES = 512;             // frames per model chunk
 const EPS = 1e-10;
 
 const MODELS = {
-  vocals: 'https://github.com/joverval/sdemux/releases/download/v1.0.0-model/vocals.fp16.onnx',
-  accompaniment: 'https://github.com/joverval/sdemux/releases/download/v1.0.0-model/accompaniment.fp16.onnx',
+  vocals: '/sdemux/models/vocals.fp16.onnx',
+  accompaniment: '/sdemux/models/accompaniment.fp16.onnx',
 };
 
 // GitHub Pages: no COOP/COEP → single-threaded WASM only
