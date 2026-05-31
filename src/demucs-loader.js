@@ -20,7 +20,8 @@
 import * as ort from 'onnxruntime-web';
 
 const MODELS = {
-  htdemucs: 'https://huggingface.co/timcsy/demucs-web-onnx/resolve/main/htdemucs_embedded.onnx',
+  primary: 'https://github.com/joverval/sdemux/releases/download/v1.0.0-model/htdemucs_embedded.onnx',
+  fallback: 'https://huggingface.co/timcsy/demucs-web-onnx/resolve/main/htdemucs_embedded.onnx',
 };
 
 const N_FFT = 4096;
@@ -214,30 +215,64 @@ export async function loadDemucsModel(progressCallback) {
     return session;
   }
 
-  // 2. Download
-  progressCallback?.({ stage: 'downloading', percent: 0 });
-  const response = await fetch(MODELS.htdemucs, { mode: 'cors' });
-  if (!response.ok) {
-    throw new Error(`Failed to download model: ${response.status} ${response.statusText}`);
-  }
-  const total = parseInt(response.headers.get('content-length'), 10) || 0;
+  // 2. Download — try primary URL first, fall back to HuggingFace
+    progressCallback?.({ stage: 'downloading', percent: 0 });
 
-  const reader = response.body.getReader();
-  const chunks = [];
-  let received = 0;
-  let prevPct = -1;
+    let response;
+    let modelUrl;
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    received += value.length;
-    const pct = total ? Math.round((received / total) * 100) : 0;
-    if (pct !== prevPct) {
-      prevPct = pct;
-      progressCallback?.({ stage: 'downloading', percent: pct, received, total });
+    try {
+      response = await fetch(MODELS.primary, { mode: 'cors' });
+      modelUrl = MODELS.primary;
+    } catch (e) {
+      console.warn('Primary CDN failed, trying fallback...', e);
+      response = await fetch(MODELS.fallback, { mode: 'cors' });
+      modelUrl = MODELS.fallback;
     }
-  }
+
+    if (!response.ok) {
+      if (modelUrl === MODELS.primary) {
+        console.warn('Primary CDN returned', response.status, '— trying fallback');
+        response = await fetch(MODELS.fallback, { mode: 'cors' });
+        modelUrl = MODELS.fallback;
+      }
+      if (!response.ok) {
+        throw new Error(`Failed to download model: ${response.status} ${response.statusText}`);
+      }
+    }
+
+    const total = parseInt(response.headers.get('content-length'), 10) || 0;
+    const totalMB = (total / 1024 / 1024).toFixed(0);
+
+    const reader = response.body.getReader();
+    const chunks = [];
+    let received = 0;
+    let prevPct = -1;
+    let downloadStart = performance.now();
+    let lastUpdate = downloadStart;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      received += value.length;
+
+      const now = performance.now();
+      const elapsed = (now - downloadStart) / 1000;
+      const speed = received / elapsed; // bytes/sec
+      const speedMBps = (speed / 1024 / 1024).toFixed(1);
+      const remainMB = ((total - received) / 1024 / 1024).toFixed(0);
+      const eta = speed > 0 ? ((total - received) / speed) : 0;
+      const etaStr = eta > 60 ? `${Math.round(eta / 60)}m` : `${Math.round(eta)}s`;
+
+      // Update UI every 500ms
+      if (now - lastUpdate > 500) {
+        lastUpdate = now;
+        const pct = total ? Math.round((received / total) * 100) : 0;
+        const mb = (received / 1024 / 1024).toFixed(0);
+        progressCallback?.({ stage: 'downloading', percent: pct, received, total, speedMBps, eta: etaStr });
+      }
+    }
 
   const buf = new Uint8Array(received);
   let pos = 0;

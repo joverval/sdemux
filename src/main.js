@@ -82,9 +82,11 @@ async function processAudio(file, audioBuf) {
     // Load model (with progress)
     modelSession = await loadDemucsModel((p) => {
       if (p.stage === 'downloading') {
-        const mb = ((p.received || 0) / 1024 / 1024).toFixed(1);
-        const totalMb = ((p.total || 0) / 1024 / 1024).toFixed(1);
-        statusEl.textContent = `Downloading model... ${mb} MB / ${totalMb} MB (${p.percent}%)`;
+        const mb = ((p.received || 0) / 1024 / 1024).toFixed(0);
+        const totalMb = ((p.total || 0) / 1024 / 1024).toFixed(0);
+        const speed = p.speedMBps || '?';
+        const eta = p.eta || '?';
+        statusEl.textContent = `Downloading model... ${mb}/${totalMb} MB (${p.percent}%) — ${speed} MB/s — ${eta} left`;
       } else if (p.stage === 'caching') {
         statusEl.textContent = 'Saving model to browser storage...';
       } else if (p.stage === 'loading') {
