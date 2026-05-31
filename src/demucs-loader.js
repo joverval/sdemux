@@ -342,7 +342,18 @@ async function processChunk(session, audioData, channels, offset, chunkSize) {
 
 // Chunked processing with overlap-add
 export async function separateStems(session, audioData, sampleRate, onProgress) {
-  const channels = audioData.numberOfChannels;
+  let channels = audioData.numberOfChannels;
+
+  // Demucs requires stereo input — duplicate mono to stereo
+  if (channels === 1) {
+    const mono = audioData.getChannelData(0);
+    const buf = new AudioContext().createBuffer(2, audioData.length, sampleRate);
+    buf.getChannelData(0).set(mono);
+    buf.getChannelData(1).set(mono);
+    audioData = buf;
+    channels = 2;
+    console.warn('Mono input detected — duplicated to stereo for Demucs');
+  }
   const length = audioData.length;
   const CHUNK = 343980;
   const OVERLAP = Math.floor(CHUNK * 0.25);
