@@ -15,7 +15,6 @@ const statusEl = document.getElementById('status');
 const separateBtn = document.getElementById('separate-btn');
 const stemCards = document.getElementById('stem-cards');
 const downloadAll = document.getElementById('download-all');
-const waveCanvas = document.getElementById('wave-canvas');
 
 // ── Audio context ──
 let audioContext = null;
@@ -55,7 +54,6 @@ async function handleFile(file) {
     return;
   }
 
-  // Large file warning
   if (file.size > 50 * 1024 * 1024) {
     if (!confirm('Large files (>50 MB) may take several minutes and consume significant memory. Continue?')) {
       return;
@@ -66,17 +64,13 @@ async function handleFile(file) {
   const arrayBuf = await file.arrayBuffer();
   const audioBuf = await ctx.decodeAudioData(arrayBuf);
 
-  // Show source player — preview without triggering model loading
   sourceAudio.src = URL.createObjectURL(file);
   sourcePlayer.style.display = 'block';
   sourceInfo.textContent = `${file.name} — ${audioBuf.numberOfChannels}ch / ${ctx.sampleRate}Hz / ${(audioBuf.duration).toFixed(1)}s`;
 
-  // Show Separator button — user manually starts the process
   separateBtn.style.display = 'block';
-  statusEl.textContent = `Ready. Click "Separate Stems" to start.`;
-  startWaveAnimation();
+  statusEl.textContent = 'Ready. Click "Separate Stems" to start.';
 
-  // Store for later
   currentFile = file;
   currentAudioBuf = audioBuf;
 }
@@ -95,7 +89,6 @@ separateBtn.addEventListener('click', async () => {
 
 // ── Freeze overlay ──
 function showFreezeOverlay(text) {
-  // Create overlay if not exists
   let overlay = document.getElementById('freeze-overlay');
   if (!overlay) {
     overlay = document.createElement('div');
@@ -117,15 +110,27 @@ function hideFreezeOverlay() {
   document.body.style.overflow = '';
 }
 
+// ── Merge AudioBuffers (sum across channels) ──
+function mergeAudioBuffers(buffers, ctx) {
+  if (buffers.length === 0) return null;
+  const first = buffers[0];
+  const out = ctx.createBuffer(first.numberOfChannels, first.length, first.sampleRate);
+  for (let c = 0; c < first.numberOfChannels; c++) {
+    const outCh = out.getChannelData(c);
+    for (const buf of buffers) {
+      const src = buf.getChannelData(c);
+      for (let i = 0; i < first.length; i++) outCh[i] += src[i];
+    }
+  }
+  return out;
+}
+
 // ── Processing ──
 async function processAudio(file, audioBuf) {
   try {
     const loadStartTime = performance.now();
     statusEl.textContent = 'Loading model... (this may take 30-60 seconds)';
 
-    startWaveAnimation();
-
-    // Load model (with progress)
     modelSession = await loadDemucsModel((p) => {
       if (p.stage === 'downloading') {
         const mb = ((p.received || 0) / 1024 / 1024).toFixed(0);
@@ -134,49 +139,47 @@ async function processAudio(file, audioBuf) {
         const eta = p.eta || '?';
         statusEl.textContent = `Downloading model... ${mb}/${totalMb} MB (${p.percent}%) — ${speed} MB/s — ${eta} left`;
       } else if (p.stage === 'loading') {
-        // Show full-screen overlay BEFORE the freeze hits
         showFreezeOverlay('Loading model into memory...\nBrowser will be unresponsive for 30-60s\nDo not close this tab.');
-        // Force overlay to paint before blocking
         statusEl.textContent = 'Creating ONNX session... browser will freeze briefly.';
-        stopWaveAnimation();
       } else if (p.stage === 'ready') {
         hideFreezeOverlay();
-        startWaveAnimation();
         const elapsed = ((performance.now() - loadStartTime) / 1000).toFixed(0);
         statusEl.textContent = `Model ready (${elapsed}s). Separating stems...`;
       }
     });
 
-    // Separate
+    // Separate 4 stems
     const result = await separateStems(modelSession, audioBuf, audioBuf.sampleRate, (p) => {
       statusEl.textContent = `Separating... chunk ${p.chunk}/${p.total}`;
     });
 
-    // Extract to AudioBuffers
+    // Extract raw 4 stems
     const ctx = getContext();
-    const stems = extractStems(result, audioBuf.sampleRate, ctx);
+    const rawStems = extractStems(result, audioBuf.sampleRate, ctx);
 
-    // Display
-    showStems(stems, ctx);
+    // Merge drums+bass+other → instrumental, keep vocals
+    const instrumental = mergeAudioBuffers([rawStems.drums, rawStems.bass, rawStems.other], ctx);
+    const stems = {
+      vocals: rawStems.vocals,
+      instrumental: instrumental,
+    };
+
+    showStems(stems);
     window._stems = stems;
     statusEl.innerHTML = '<span style="color:#4ade80">Done!</span>';
     separateBtn.style.display = 'none';
-    stopWaveAnimation();
 
   } catch (err) {
     hideFreezeOverlay();
     statusEl.innerHTML = `<span style="color:#f87171">Error: ${err.message}</span>`;
-    stopWaveAnimation();
     console.error(err);
   }
 }
 
 // ── Display stems ──
 const STEM_CONFIG = {
-  drums:  { label: 'Drums',  emoji: '🥁', color: '#f97316' },
-  bass:   { label: 'Bass',   emoji: '🎸', color: '#6366f1' },
-  other:  { label: 'Other',  emoji: '🎹', color: '#ec4899' },
-  vocals: { label: 'Vocals', emoji: '🎤', color: '#22c55e' },
+  vocals:       { label: 'Vocals',       emoji: '🎤', color: '#22c55e' },
+  instrumental: { label: 'Instrumental',  emoji: '🎵', color: '#6366f1' },
 };
 
 function audioBufferToWav(buffer) {
@@ -223,8 +226,8 @@ function audioBufferToWav(buffer) {
   return new Blob([wav], { type: 'audio/wav' });
 }
 
-function showStems(stems, ctx) {
-  const names = ['drums', 'bass', 'other', 'vocals'];
+function showStems(stems) {
+  const names = ['vocals', 'instrumental'];
   stemCards.innerHTML = names.map(name => {
     const cfg = STEM_CONFIG[name];
     const url = URL.createObjectURL(audioBufferToWav(stems[name]));
@@ -254,7 +257,7 @@ downloadAll.addEventListener('click', async () => {
   const stems = window._stems;
   if (!stems) return;
   const zip = new JSZip();
-  const names = ['drums', 'bass', 'other', 'vocals'];
+  const names = ['vocals', 'instrumental'];
   for (const name of names) {
     const blob = audioBufferToWav(stems[name]);
     zip.file(`${name}.wav`, blob);
@@ -267,79 +270,6 @@ downloadAll.addEventListener('click', async () => {
   a.click();
   URL.revokeObjectURL(url);
 });
-
-// ── Wave canvas animation ──
-const waveCtx = waveCanvas.getContext('2d');
-let waveAnimating = false;
-let wavePhase = 0;
-let waveFadeOut = false;
-let waveFadeAlpha = 1.0;
-let waveStartTime = 0;
-
-function startWaveAnimation() {
-  if (waveAnimating) return;
-  waveAnimating = true;
-  wavePhase = 0;
-  waveFadeOut = false;
-  waveFadeAlpha = 1.0;
-  waveStartTime = performance.now();
-  animateWaves();
-}
-
-function stopWaveAnimation() {
-  waveFadeOut = true;
-  waveStartTime = performance.now();
-}
-
-function animateWaves() {
-  if (!waveAnimating) return;
-  const w = waveCanvas.width = waveCanvas.clientWidth;
-  const h = waveCanvas.height = waveCanvas.clientHeight;
-  waveCtx.clearRect(0, 0, w, h);
-
-  const stemNames = ['drums', 'bass', 'other', 'vocals'];
-
-  if (waveFadeOut) {
-    const elapsed = (performance.now() - waveStartTime) / 1000;
-    waveFadeAlpha = Math.max(0, 1 - elapsed);
-    if (waveFadeAlpha <= 0) {
-      waveAnimating = false;
-      waveCtx.clearRect(0, 0, w, h);
-      return;
-    }
-  }
-
-  for (let i = 0; i < 4; i++) {
-    const cfg = STEM_CONFIG[stemNames[i]];
-    const y = h * (0.15 + i * 0.22);
-    const phase = wavePhase + i * Math.PI * 0.5;
-
-    waveCtx.strokeStyle = cfg.color;
-    waveCtx.globalAlpha = waveFadeAlpha * 0.7;
-    waveCtx.lineWidth = 2;
-    waveCtx.beginPath();
-    waveCtx.moveTo(0, y);
-
-    const cp1x = w * 0.2;
-    const cp1y = y + Math.sin(phase) * 30;
-    const cp2x = w * 0.7;
-    const cp2y = y + Math.cos(phase * 1.3) * 25;
-    const endX = w;
-    const endY = y + Math.sin(phase * 0.7) * 15;
-
-    waveCtx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, endX, endY);
-    waveCtx.stroke();
-
-    waveCtx.fillStyle = cfg.color;
-    waveCtx.globalAlpha = waveFadeAlpha;
-    waveCtx.beginPath();
-    waveCtx.arc(endX - 10, endY, 5, 0, Math.PI * 2);
-    waveCtx.fill();
-  }
-
-  wavePhase += 0.03;
-  requestAnimationFrame(animateWaves);
-}
 
 // ── Error checks ──
 if (typeof WebAssembly !== 'object') {
