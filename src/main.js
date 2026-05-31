@@ -3,6 +3,7 @@
  */
 
 import { loadDemucsModel, separateStems, extractStems } from './demucs-loader.js';
+import JSZip from 'jszip';
 
 // ── DOM refs ──
 const dropZone = document.getElementById('drop-zone');
@@ -50,6 +51,13 @@ async function handleFile(file) {
     return;
   }
 
+  // Large file warning
+  if (file.size > 50 * 1024 * 1024) {
+    if (!confirm('Large files (>50 MB) may take several minutes and consume significant memory. Continue?')) {
+      return;
+    }
+  }
+
   const ctx = getContext();
   const arrayBuf = await file.arrayBuffer();
   const audioBuf = await ctx.decodeAudioData(arrayBuf);
@@ -67,6 +75,8 @@ async function handleFile(file) {
 async function processAudio(file, audioBuf) {
   try {
     statusEl.textContent = 'Loading model...';
+
+    startWaveAnimation();
 
     // Load model (with progress)
     modelSession = await loadDemucsModel((p) => {
@@ -97,8 +107,11 @@ async function processAudio(file, audioBuf) {
     window._stems = stems;
     statusEl.innerHTML = '<span style="color:#4ade80">Done!</span>';
 
+    stopWaveAnimation();
+
   } catch (err) {
     statusEl.innerHTML = `<span style="color:#f87171">Error: ${err.message}</span>`;
+    stopWaveAnimation();
     console.error(err);
   }
 }
@@ -180,3 +193,100 @@ window.downloadStem = function(name) {
   a.click();
   URL.revokeObjectURL(url);
 };
+
+// ── ZIP download ──
+downloadAll.addEventListener('click', async () => {
+  const stems = window._stems;
+  if (!stems) return;
+  const zip = new JSZip();
+  const names = ['drums', 'bass', 'other', 'vocals'];
+  for (const name of names) {
+    const blob = audioBufferToWav(stems[name]);
+    zip.file(`${name}.wav`, blob);
+  }
+  const zipBlob = await zip.generateAsync({ type: 'blob' });
+  const url = URL.createObjectURL(zipBlob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'stems.zip';
+  a.click();
+  URL.revokeObjectURL(url);
+});
+
+// ── Wave canvas animation ──
+const waveCtx = waveCanvas.getContext('2d');
+let waveAnimating = false;
+let wavePhase = 0;
+let waveFadeOut = false;
+let waveFadeAlpha = 1.0;
+let waveStartTime = 0;
+
+function startWaveAnimation() {
+  if (waveAnimating) return;
+  waveAnimating = true;
+  wavePhase = 0;
+  waveFadeOut = false;
+  waveFadeAlpha = 1.0;
+  waveStartTime = performance.now();
+  animateWaves();
+}
+
+function stopWaveAnimation() {
+  waveFadeOut = true;
+  waveStartTime = performance.now();
+}
+
+function animateWaves() {
+  if (!waveAnimating) return;
+  const w = waveCanvas.width = waveCanvas.clientWidth;
+  const h = waveCanvas.height = waveCanvas.clientHeight;
+  waveCtx.clearRect(0, 0, w, h);
+
+  const stemNames = ['drums', 'bass', 'other', 'vocals'];
+
+  if (waveFadeOut) {
+    const elapsed = (performance.now() - waveStartTime) / 1000;
+    waveFadeAlpha = Math.max(0, 1 - elapsed);
+    if (waveFadeAlpha <= 0) {
+      waveAnimating = false;
+      waveCtx.clearRect(0, 0, w, h);
+      return;
+    }
+  }
+
+  for (let i = 0; i < 4; i++) {
+    const cfg = STEM_CONFIG[stemNames[i]];
+    const y = h * (0.15 + i * 0.22);
+    const phase = wavePhase + i * Math.PI * 0.5;
+
+    waveCtx.strokeStyle = cfg.color;
+    waveCtx.globalAlpha = waveFadeAlpha * 0.7;
+    waveCtx.lineWidth = 2;
+    waveCtx.beginPath();
+    waveCtx.moveTo(0, y);
+
+    const cp1x = w * 0.2;
+    const cp1y = y + Math.sin(phase) * 30;
+    const cp2x = w * 0.7;
+    const cp2y = y + Math.cos(phase * 1.3) * 25;
+    const endX = w;
+    const endY = y + Math.sin(phase * 0.7) * 15;
+
+    waveCtx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, endX, endY);
+    waveCtx.stroke();
+
+    waveCtx.fillStyle = cfg.color;
+    waveCtx.globalAlpha = waveFadeAlpha;
+    waveCtx.beginPath();
+    waveCtx.arc(endX - 10, endY, 5, 0, Math.PI * 2);
+    waveCtx.fill();
+  }
+
+  wavePhase += 0.03;
+  requestAnimationFrame(animateWaves);
+}
+
+// ── Error checks ──
+if (typeof WebAssembly !== 'object') {
+  statusEl.innerHTML = '<span style="color:#f87171">This browser does not support WebAssembly. Please use Chrome, Firefox, or Edge.</span>';
+}
