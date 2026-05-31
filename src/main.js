@@ -87,12 +87,11 @@ async function processAudio(file, audioBuf) {
         const speed = p.speedMBps || '?';
         const eta = p.eta || '?';
         statusEl.textContent = `Downloading model... ${mb}/${totalMb} MB (${p.percent}%) — ${speed} MB/s — ${eta} left`;
-      } else if (p.stage === 'caching') {
-        statusEl.textContent = 'Saving model to browser storage...';
       } else if (p.stage === 'loading') {
-        const elapsed = ((performance.now() - loadStartTime) / 1000).toFixed(0);
-        statusEl.textContent = `Loading model into memory... ${elapsed}s`;
+        stopWaveAnimation(); // Save CPU — page is about to freeze anyway
+        statusEl.textContent = 'Loading model into memory... PAGE MAY FREEZE for 10-60s. This is normal — do not close the tab.';
       } else if (p.stage === 'ready') {
+        startWaveAnimation();
         const elapsed = ((performance.now() - loadStartTime) / 1000).toFixed(0);
         statusEl.textContent = `Model ready (${elapsed}s). Separating stems...`;
       }

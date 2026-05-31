@@ -247,9 +247,9 @@ export async function loadDemucsModel(progressCallback) {
     const reader = response.body.getReader();
     const chunks = [];
     let received = 0;
-    let prevPct = -1;
     let downloadStart = performance.now();
     let lastUpdate = downloadStart;
+    let lastYield = downloadStart;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -259,7 +259,7 @@ export async function loadDemucsModel(progressCallback) {
 
       const now = performance.now();
       const elapsed = (now - downloadStart) / 1000;
-      const speed = received / elapsed; // bytes/sec
+      const speed = received / elapsed;
       const speedMBps = (speed / 1024 / 1024).toFixed(1);
       const remainMB = ((total - received) / 1024 / 1024).toFixed(0);
       const eta = speed > 0 ? ((total - received) / speed) : 0;
@@ -272,22 +272,30 @@ export async function loadDemucsModel(progressCallback) {
         const mb = (received / 1024 / 1024).toFixed(0);
         progressCallback?.({ stage: 'downloading', percent: pct, received, total, speedMBps, eta: etaStr });
       }
+
+      // Yield to event loop every ~16ms (one frame) so UI stays responsive
+      if (now - lastYield > 16) {
+        lastYield = now;
+        await new Promise(r => setTimeout(r, 0));
+      }
     }
+
+  // Yield before assembling the buffer (172MB copy can freeze the tab)
+  await new Promise(r => setTimeout(r, 0));
 
   const buf = new Uint8Array(received);
   let pos = 0;
   for (const chunk of chunks) { buf.set(chunk, pos); pos += chunk.length; }
 
-  // 3. Cache to IndexedDB
-  progressCallback?.({ stage: 'caching', percent: 0 });
-  try {
-    await saveToCache(buf.buffer.slice(0));
-  } catch (e) {
-    console.warn('Failed to cache model to IndexedDB:', e);
-  }
+  // 3. Cache to IndexedDB (deferred — don't block the session creation)
+  saveToCache(buf.buffer.slice(0)).catch(e =>
+    console.warn('Failed to cache model to IndexedDB:', e)
+  );
 
   // 4. Create inference session
-  progressCallback?.({ stage: 'loading', percent: 90 });
+  // WARNING: This WILL freeze the page for 10-60 seconds on single-threaded WASM.
+  // The browser tab becomes unresponsive — this is unavoidable without a Web Worker.
+  progressCallback?.({ stage: 'loading', percent: 0 });
   const t0 = performance.now();
   const session = await ort.InferenceSession.create(buf.buffer, {
     executionProviders: ['wasm'],
