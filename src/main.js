@@ -1,6 +1,6 @@
 /**
  * sdemux v2 — server-side stem separation via Demucs API
- * Uploads audio to sdemux.joverval.cl, polls for result, displays stems.
+ * Boombox UI with cassette deck (input) and speaker (output)
  */
 
 import JSZip from 'jszip';
@@ -15,18 +15,20 @@ const sourceAudio = document.getElementById('source-audio');
 const sourceInfo = document.getElementById('source-info');
 const statusEl = document.getElementById('status');
 const separateBtn = document.getElementById('separate-btn');
-const stemCards = document.getElementById('stem-cards');
+const stemGrid = document.getElementById('stem-cards');
 const downloadAll = document.getElementById('download-all');
+const spoolLeft = document.getElementById('spool-left');
+const spoolRight = document.getElementById('spool-right');
 
 // ── State ──
 let currentFile = null;
 
 // ── Stem display config ──
 const STEM_CONFIG = {
-  vocals: { label: 'Vocals', emoji: '🎤', color: '#22c55e' },
-  drums:  { label: 'Drums',  emoji: '🥁', color: '#f97316' },
-  bass:   { label: 'Bass',   emoji: '🎸', color: '#6366f1' },
-  other:  { label: 'Other',  emoji: '🎵', color: '#ec4899' },
+  vocals: { label: 'Vocals', emoji: '', color: '#c0392b' },
+  drums:  { label: 'Drums',  emoji: '', color: '#c0392b' },
+  bass:   { label: 'Bass',   emoji: '', color: '#c0392b' },
+  other:  { label: 'Other',  emoji: '', color: '#c0392b' },
 };
 
 // ── Upload ──
@@ -50,16 +52,16 @@ dropZone.addEventListener('drop', (e) => {
 
 function handleFile(file) {
   if (!file.type.startsWith('audio/') && !file.name.match(/\.(wav|mp3|m4a|ogg|flac)$/i)) {
-    statusEl.textContent = 'Unsupported file type. Please use MP3 or WAV.';
+    statusEl.textContent = 'Unsupported file type. Use MP3 or WAV.';
     return;
   }
 
   sourceAudio.src = URL.createObjectURL(file);
   sourcePlayer.style.display = 'block';
-  sourceInfo.textContent = `${file.name} — ${(file.size / 1024 / 1024).toFixed(1)} MB`;
+  sourceInfo.textContent = `${file.name}  \u2014  ${(file.size / 1024 / 1024).toFixed(1)} MB`;
   separateBtn.style.display = 'block';
-  statusEl.textContent = 'Ready. Click "Separate Stems" to send to server.';
-  stemCards.innerHTML = '';
+  statusEl.textContent = 'Ready. Press Separate to send to server.';
+  stemGrid.innerHTML = '';
   downloadAll.style.display = 'none';
 
   currentFile = file;
@@ -69,11 +71,21 @@ function handleFile(file) {
 separateBtn.addEventListener('click', async () => {
   if (!currentFile) return;
   separateBtn.disabled = true;
-  separateBtn.textContent = 'Uploading...';
+  separateBtn.textContent = '\u25B6 Uploading...';
   await processFile(currentFile);
   separateBtn.disabled = false;
-  separateBtn.textContent = 'Separate Stems';
+  separateBtn.textContent = '\u25B6 Separate';
 });
+
+// ── Spool animation ──
+function startSpools() {
+  spoolLeft.classList.add('spinning');
+  spoolRight.classList.add('spinning');
+}
+function stopSpools() {
+  spoolLeft.classList.remove('spinning');
+  spoolRight.classList.remove('spinning');
+}
 
 // ── API helpers ──
 async function uploadFile(file) {
@@ -110,6 +122,7 @@ async function downloadZip(jobId) {
 
 // ── Processing ──
 async function processFile(file) {
+  startSpools();
   try {
     // 1. Upload
     statusEl.textContent = 'Uploading file...';
@@ -118,21 +131,21 @@ async function processFile(file) {
 
     // 2. Poll until done
     const POLL_INTERVAL = 5000;
-    const MAX_WAIT = 15 * 60 * 1000; // 15 min timeout
+    const MAX_WAIT = 15 * 60 * 1000;
     const startTime = Date.now();
 
     while (true) {
       await sleep(POLL_INTERVAL);
 
       if (Date.now() - startTime > MAX_WAIT) {
-        throw new Error('Timed out waiting for separation to complete.');
+        throw new Error('Timed out waiting for separation.');
       }
 
       job = await pollStatus(jobId);
 
       if (job.status === 'queued') {
-        const mins = ((job.estimated_wait_minutes || 0).toFixed(1));
-        statusEl.textContent = `Queued (position ${job.position}). Estimated wait: ${mins} min.`;
+        const mins = (job.estimated_wait_minutes || 0).toFixed(1);
+        statusEl.textContent = `Queued #${job.position} \u2014 ~${mins} min wait`;
       } else if (job.status === 'processing') {
         statusEl.textContent = 'Processing on server...';
       } else if (job.status === 'done') {
@@ -162,27 +175,31 @@ async function processFile(file) {
 
     showStems(stems);
 
-    statusEl.innerHTML = `<span style="color:#4ade80">Done! ${job.stem_count} stems extracted.</span>`;
+    statusEl.textContent = `Done! ${job.stem_count} stems extracted.`;
+    statusEl.style.color = '#27ae60';
     separateBtn.style.display = 'none';
 
   } catch (err) {
-    statusEl.innerHTML = `<span style="color:#f87171">${err.message}</span>`;
+    statusEl.textContent = err.message;
+    statusEl.style.color = 'var(--accent)';
     console.error(err);
+  } finally {
+    stopSpools();
   }
 }
 
-// ── Display stems ──
+// ── Display stems in 2x2 grid ──
 function showStems(stemUrls) {
   const displayOrder = ['vocals', 'drums', 'bass', 'other'];
-  stemCards.innerHTML = displayOrder
+  stemGrid.innerHTML = displayOrder
     .filter(name => stemUrls[name])
     .map(name => {
       const cfg = STEM_CONFIG[name];
       return `
-        <div class="stem-card" style="border-left-color:${cfg.color}">
-          <h3 style="color:${cfg.color}">${cfg.emoji} ${cfg.label}</h3>
+        <div class="stem-card">
+          <h3 style="color:var(--accent)">${cfg.label}</h3>
           <audio controls src="${stemUrls[name]}"></audio>
-          <button onclick="downloadStem('${name}')">Download</button>
+          <button class="btn-stem-dl" onclick="downloadStem('${name}')">Download</button>
         </div>`;
     })
     .join('');
