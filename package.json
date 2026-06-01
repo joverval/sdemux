@@ -1,8 +1,8 @@
 {
   "name": "sdemux",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
-  "description": "Browser-based audio stem separation using Demucs ONNX",
+  "description": "Browser-based audio stem separation via Demucs API",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,7 +10,6 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "onnxruntime-web": "^1.18.0",
     "jszip": "^3.10.1"
   },
   "devDependencies": {

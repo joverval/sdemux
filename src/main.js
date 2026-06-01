@@ -1,9 +1,11 @@
 /**
- * sdemux — browser-based audio stem separation
+ * sdemux v2 — server-side stem separation via Demucs API
+ * Uploads audio to sdemux.joverval.cl, polls for result, displays stems.
  */
 
-import { loadSpleeterModels, separateStems, extractStems } from './spleeter-loader.js';
 import JSZip from 'jszip';
+
+const API_BASE = 'https://sdemux.joverval.cl/api';
 
 // ── DOM refs ──
 const dropZone = document.getElementById('drop-zone');
@@ -16,18 +18,16 @@ const separateBtn = document.getElementById('separate-btn');
 const stemCards = document.getElementById('stem-cards');
 const downloadAll = document.getElementById('download-all');
 
-// ── Audio context ──
-let audioContext = null;
-function getContext() {
-  if (!audioContext) audioContext = new AudioContext();
-  return audioContext;
-}
-
 // ── State ──
-let modelSession = null;
 let currentFile = null;
-let currentAudioBuf = null;
-let isProcessing = false;
+
+// ── Stem display config ──
+const STEM_CONFIG = {
+  vocals: { label: 'Vocals', emoji: '🎤', color: '#22c55e' },
+  drums:  { label: 'Drums',  emoji: '🥁', color: '#f97316' },
+  bass:   { label: 'Bass',   emoji: '🎸', color: '#6366f1' },
+  other:  { label: 'Other',  emoji: '🎵', color: '#ec4899' },
+};
 
 // ── Upload ──
 dropZone.addEventListener('click', () => fileInput.click());
@@ -48,213 +48,187 @@ dropZone.addEventListener('drop', (e) => {
   if (file) handleFile(file);
 });
 
-async function handleFile(file) {
+function handleFile(file) {
   if (!file.type.startsWith('audio/') && !file.name.match(/\.(wav|mp3|m4a|ogg|flac)$/i)) {
-    statusEl.textContent = 'Unsupported file type. Please use WAV or MP3.';
+    statusEl.textContent = 'Unsupported file type. Please use MP3 or WAV.';
     return;
   }
 
-  if (file.size > 50 * 1024 * 1024) {
-    if (!confirm('Large files (>50 MB) may take several minutes and consume significant memory. Continue?')) {
-      return;
-    }
-  }
-
-  const ctx = getContext();
-  const arrayBuf = await file.arrayBuffer();
-  const audioBuf = await ctx.decodeAudioData(arrayBuf);
-
   sourceAudio.src = URL.createObjectURL(file);
   sourcePlayer.style.display = 'block';
-  sourceInfo.textContent = `${file.name} — ${audioBuf.numberOfChannels}ch / ${ctx.sampleRate}Hz / ${(audioBuf.duration).toFixed(1)}s`;
-
+  sourceInfo.textContent = `${file.name} — ${(file.size / 1024 / 1024).toFixed(1)} MB`;
   separateBtn.style.display = 'block';
-  statusEl.textContent = 'Ready. Click "Separate Stems" to start.';
+  statusEl.textContent = 'Ready. Click "Separate Stems" to send to server.';
+  stemCards.innerHTML = '';
+  downloadAll.style.display = 'none';
 
   currentFile = file;
-  currentAudioBuf = audioBuf;
 }
 
 // ── Separate button ──
 separateBtn.addEventListener('click', async () => {
-  if (isProcessing || !currentAudioBuf) return;
-  isProcessing = true;
+  if (!currentFile) return;
   separateBtn.disabled = true;
-  separateBtn.textContent = 'Processing...';
-  await processAudio(currentFile, currentAudioBuf);
-  isProcessing = false;
+  separateBtn.textContent = 'Uploading...';
+  await processFile(currentFile);
   separateBtn.disabled = false;
   separateBtn.textContent = 'Separate Stems';
 });
 
-// ── Freeze overlay ──
-function showFreezeOverlay(text) {
-  let overlay = document.getElementById('freeze-overlay');
-  if (!overlay) {
-    overlay = document.createElement('div');
-    overlay.id = 'freeze-overlay';
-    overlay.innerHTML = `
-      <div class="freeze-spinner"></div>
-      <p id="freeze-text"></p>
-    `;
-    document.body.appendChild(overlay);
+// ── API helpers ──
+async function uploadFile(file) {
+  const form = new FormData();
+  form.append('file', file);
+
+  const resp = await fetch(`${API_BASE}/separate`, {
+    method: 'POST',
+    body: form,
+  });
+
+  if (resp.status === 429) {
+    const data = await resp.json();
+    throw new Error(`Rate limited. Retry after ${data.retry_after_seconds || 30}s.`);
   }
-  document.getElementById('freeze-text').textContent = text;
-  overlay.style.display = 'flex';
-  document.body.style.overflow = 'hidden';
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`Upload failed: ${resp.status} ${text}`);
+  }
+  return resp.json();
 }
 
-function hideFreezeOverlay() {
-  const overlay = document.getElementById('freeze-overlay');
-  if (overlay) overlay.style.display = 'none';
-  document.body.style.overflow = '';
+async function pollStatus(jobId) {
+  const resp = await fetch(`${API_BASE}/status/${jobId}`);
+  if (!resp.ok) throw new Error(`Status check failed: ${resp.status}`);
+  return resp.json();
+}
+
+async function downloadZip(jobId) {
+  const resp = await fetch(`${API_BASE}/download/${jobId}`);
+  if (!resp.ok) throw new Error(`Download failed: ${resp.status}`);
+  return resp.blob();
 }
 
 // ── Processing ──
-async function processAudio(file, audioBuf) {
+async function processFile(file) {
   try {
-    const loadStartTime = performance.now();
-    statusEl.textContent = 'Loading model... (this may take 30-60 seconds)';
+    // 1. Upload
+    statusEl.textContent = 'Uploading file...';
+    let job = await uploadFile(file);
+    const jobId = job.job_id;
 
-    modelSession = await loadSpleeterModels((p) => {
-      if (p.stage === 'downloading') {
-        const name = p.model || '';
-        const mb = ((p.received || 0) / 1024 / 1024).toFixed(0);
-        const totalMb = ((p.total || 0) / 1024 / 1024).toFixed(0);
-        statusEl.textContent = `Downloading ${name}... ${mb}/${totalMb} MB (${p.percent}%)`;
-      } else if (p.stage === 'loading') {
-        showFreezeOverlay(`Loading ${p.model} model...\nBrowser will be unresponsive briefly\nDo not close this tab.`);
-        statusEl.textContent = `Creating ONNX session for ${p.model}...`;
-      } else if (p.stage === 'ready') {
-        hideFreezeOverlay();
-        const elapsed = ((performance.now() - loadStartTime) / 1000).toFixed(0);
-        statusEl.textContent = `${p.model} ready (${elapsed}s).`;
+    // 2. Poll until done
+    const POLL_INTERVAL = 5000;
+    const MAX_WAIT = 15 * 60 * 1000; // 15 min timeout
+    const startTime = Date.now();
+
+    while (true) {
+      await sleep(POLL_INTERVAL);
+
+      if (Date.now() - startTime > MAX_WAIT) {
+        throw new Error('Timed out waiting for separation to complete.');
       }
-    });
 
-    // Separate 2 stems (vocals + accompaniment)
-    const result = await separateStems(modelSession, audioBuf, audioBuf.sampleRate, (p) => {
-      const stages = { stft: 'Computing STFT...', inference: 'Running Spleeter...', masking: 'Computing masks...', istft: 'Reconstructing audio...' };
-      statusEl.textContent = stages[p.stage] || `Separating... ${p.chunk}/${p.total}`;
-    });
+      job = await pollStatus(jobId);
 
-    // Extract 2 stems
-    const ctx = getContext();
-    const rawStems = extractStems(result, audioBuf.sampleRate, ctx);
+      if (job.status === 'queued') {
+        const mins = ((job.estimated_wait_minutes || 0).toFixed(1));
+        statusEl.textContent = `Queued (position ${job.position}). Estimated wait: ${mins} min.`;
+      } else if (job.status === 'processing') {
+        statusEl.textContent = 'Processing on server...';
+      } else if (job.status === 'done') {
+        break;
+      } else {
+        throw new Error(`Unexpected job status: ${job.status}`);
+      }
+    }
 
-    const stems = {
-      vocals: rawStems.vocals,
-      instrumental: rawStems.accompaniment,
-    };
+    statusEl.textContent = 'Downloading stems...';
+
+    // 3. Download zip
+    const zipBlob = await downloadZip(jobId);
+
+    // 4. Unzip and display
+    const zip = await JSZip.loadAsync(zipBlob);
+    const stems = {};
+    const order = job.stem_names || ['vocals.mp3', 'drums.mp3', 'bass.mp3', 'other.mp3'];
+
+    for (const name of order) {
+      const file = zip.file(name);
+      if (!file) continue;
+      const blob = await file.async('blob');
+      const stemName = name.replace(/\.mp3$/, '');
+      stems[stemName] = URL.createObjectURL(blob);
+    }
 
     showStems(stems);
-    window._stems = stems;
-    statusEl.innerHTML = '<span style="color:#4ade80">Done!</span>';
+
+    statusEl.innerHTML = `<span style="color:#4ade80">Done! ${job.stem_count} stems extracted.</span>`;
     separateBtn.style.display = 'none';
 
   } catch (err) {
-    hideFreezeOverlay();
-    statusEl.innerHTML = `<span style="color:#f87171">Error: ${err.message}</span>`;
+    statusEl.innerHTML = `<span style="color:#f87171">${err.message}</span>`;
     console.error(err);
   }
 }
 
 // ── Display stems ──
-const STEM_CONFIG = {
-  vocals:       { label: 'Vocals',       emoji: '🎤', color: '#22c55e' },
-  instrumental: { label: 'Instrumental',  emoji: '🎵', color: '#6366f1' },
-};
-
-function audioBufferToWav(buffer) {
-  const numChannels = buffer.numberOfChannels;
-  const sampleRate = buffer.sampleRate;
-  const length = buffer.length;
-  const bytesPerSample = 2;
-  const blockAlign = numChannels * bytesPerSample;
-  const dataSize = length * blockAlign;
-  const headerSize = 44;
-  const wav = new ArrayBuffer(headerSize + dataSize);
-  const view = new DataView(wav);
-
-  function writeString(offset, str) {
-    for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
-  }
-
-  writeString(0, 'RIFF');
-  view.setUint32(4, 36 + dataSize, true);
-  writeString(8, 'WAVE');
-  writeString(12, 'fmt ');
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, numChannels, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * blockAlign, true);
-  view.setUint16(32, blockAlign, true);
-  view.setUint16(34, bytesPerSample * 8, true);
-  writeString(36, 'data');
-  view.setUint32(40, dataSize, true);
-
-  let offset = 44;
-  const interleaved = new Float32Array(length * numChannels);
-  for (let c = 0; c < numChannels; c++) {
-    const ch = buffer.getChannelData(c);
-    for (let i = 0; i < length; i++) interleaved[i * numChannels + c] = ch[i];
-  }
-  for (let i = 0; i < interleaved.length; i++) {
-    const s = Math.max(-1, Math.min(1, interleaved[i]));
-    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
-    offset += 2;
-  }
-
-  return new Blob([wav], { type: 'audio/wav' });
-}
-
-function showStems(stems) {
-  const names = ['vocals', 'instrumental'];
-  stemCards.innerHTML = names.map(name => {
-    const cfg = STEM_CONFIG[name];
-    const url = URL.createObjectURL(audioBufferToWav(stems[name]));
-    return `<div class="stem-card" style="border-left-color:${cfg.color}">
-      <h3 style="color:${cfg.color}">${cfg.emoji} ${cfg.label}</h3>
-      <audio controls src="${url}"></audio>
-      <button onclick="downloadStem('${name}')">Download</button>
-    </div>`;
-  }).join('');
+function showStems(stemUrls) {
+  const displayOrder = ['vocals', 'drums', 'bass', 'other'];
+  stemCards.innerHTML = displayOrder
+    .filter(name => stemUrls[name])
+    .map(name => {
+      const cfg = STEM_CONFIG[name];
+      return `
+        <div class="stem-card" style="border-left-color:${cfg.color}">
+          <h3 style="color:${cfg.color}">${cfg.emoji} ${cfg.label}</h3>
+          <audio controls src="${stemUrls[name]}"></audio>
+          <button onclick="downloadStem('${name}')">Download</button>
+        </div>`;
+    })
+    .join('');
   downloadAll.style.display = 'block';
 }
 
+// ── Per-stem download ──
+window._stemUrls = {};
 window.downloadStem = function(name) {
-  const stems = window._stems;
-  if (!stems || !stems[name]) return;
-  const blob = audioBufferToWav(stems[name]);
-  const url = URL.createObjectURL(blob);
+  const url = window._stemUrls[name];
+  if (!url) return;
   const a = document.createElement('a');
   a.href = url;
-  a.download = `${name}.wav`;
+  a.download = `${name}.mp3`;
   a.click();
-  URL.revokeObjectURL(url);
 };
 
-// ── ZIP download ──
+// ── ZIP download (re-zip client-side) ──
 downloadAll.addEventListener('click', async () => {
-  const stems = window._stems;
-  if (!stems) return;
+  const urls = window._stemUrls;
+  if (!urls || Object.keys(urls).length === 0) return;
   const zip = new JSZip();
-  const names = ['vocals', 'instrumental'];
+  const names = ['vocals', 'drums', 'bass', 'other'];
   for (const name of names) {
-    const blob = audioBufferToWav(stems[name]);
-    zip.file(`${name}.wav`, blob);
+    const url = urls[name];
+    if (!url) continue;
+    const resp = await fetch(url);
+    const blob = await resp.blob();
+    zip.file(`${name}.mp3`, blob);
   }
   const zipBlob = await zip.generateAsync({ type: 'blob' });
-  const url = URL.createObjectURL(zipBlob);
+  const zipUrl = URL.createObjectURL(zipBlob);
   const a = document.createElement('a');
-  a.href = url;
+  a.href = zipUrl;
   a.download = 'stems.zip';
   a.click();
-  URL.revokeObjectURL(url);
+  URL.revokeObjectURL(zipUrl);
 });
 
-// ── Error checks ──
-if (typeof WebAssembly !== 'object') {
-  statusEl.innerHTML = '<span style="color:#f87171">This browser does not support WebAssembly. Please use Chrome, Firefox, or Edge.</span>';
+// ── Stash stem URLs for per-stem & ZIP download ──
+const _origShowStems = showStems;
+showStems = function(stemUrls) {
+  window._stemUrls = stemUrls;
+  _origShowStems(stemUrls);
+};
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
