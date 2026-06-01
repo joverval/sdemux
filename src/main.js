@@ -87,6 +87,24 @@ function stopSpools() {
   spoolRight.classList.remove('spinning');
 }
 
+// ── Speaker grille peel animation ──
+let _peelStarted = false;
+function updatePeel(progress) {
+  if (!_peelStarted) {
+    _peelStarted = true;
+    document.querySelector('.speaker-grille').classList.add('peeling');
+  }
+  document.querySelector('.speaker-grille').style.setProperty('--peel-progress', progress);
+}
+function resetPeel() {
+  _peelStarted = false;
+  const grille = document.querySelector('.speaker-grille');
+  if (grille) {
+    grille.classList.remove('peeling');
+    grille.style.removeProperty('--peel-progress');
+  }
+}
+
 // ── API helpers ──
 async function uploadFile(file) {
   const form = new FormData();
@@ -147,7 +165,12 @@ async function processFile(file) {
         const mins = (job.estimated_wait_minutes || 0).toFixed(1);
         statusEl.textContent = `Queued #${job.position} \u2014 ~${mins} min wait`;
       } else if (job.status === 'processing') {
-        statusEl.textContent = 'Processing on server...';
+        const est = job.estimated_seconds || 150;
+        const elapsed = job.elapsed_seconds || 0;
+        const progress = Math.min(elapsed / est, 1);
+        const pct = Math.round(progress * 100);
+        updatePeel(progress);
+        statusEl.textContent = `Processing... ${pct}%`;
       } else if (job.status === 'done') {
         break;
       } else {
@@ -159,6 +182,8 @@ async function processFile(file) {
 
     // 3. Download zip
     const zipBlob = await downloadZip(jobId);
+
+    resetPeel();
 
     // 4. Unzip and display
     const zip = await JSZip.loadAsync(zipBlob);
@@ -180,6 +205,7 @@ async function processFile(file) {
     separateBtn.style.display = 'none';
 
   } catch (err) {
+    resetPeel();
     statusEl.textContent = err.message;
     statusEl.style.color = 'var(--accent)';
     console.error(err);

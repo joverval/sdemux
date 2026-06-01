@@ -288,6 +288,23 @@ body {
   box-shadow: 0 1px 3px rgba(0,0,0,0.5);
 }
 
+/* ── Peel animation overlay (conic-gradient reveals background) ── */
+.speaker-grille.peeling::after {
+  content: '';
+  position: absolute;
+  inset: -6px;
+  border-radius: 50%;
+  background: conic-gradient(
+    from -90deg,
+    var(--bg) 0deg,
+    var(--bg) calc(var(--peel-progress, 0) * 360deg),
+    transparent calc(var(--peel-progress, 0) * 360deg),
+    transparent 360deg
+  );
+  pointer-events: none;
+  transition: background 0.6s ease;
+}
+
 /* ── Stems area (overlays speaker context) ── */
 .stems-area {
   display: flex;
