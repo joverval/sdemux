@@ -17,11 +17,20 @@ const statusEl = document.getElementById('status');
 const separateBtn = document.getElementById('separate-btn');
 const stemGrid = document.getElementById('stem-cards');
 const downloadAll = document.getElementById('download-all');
+const playAllBtn = document.getElementById('play-all');
 const spoolLeft = document.getElementById('spool-left');
 const spoolRight = document.getElementById('spool-right');
 
 // ── State ──
 let currentFile = null;
+
+// Web Audio playback
+let audioCtx = null;
+let activeSources = [];
+let stemGains = {};
+let stemBuffers = {};
+let stemBlobs = {};
+let isPlaying = false;
 
 // ── Stem display config ──
 const STEM_CONFIG = {
@@ -63,6 +72,12 @@ function handleFile(file) {
   statusEl.textContent = 'Ready. Press Separate to send to server.';
   stemGrid.innerHTML = '';
   downloadAll.style.display = 'none';
+  playAllBtn.style.display = 'none';
+
+  // Reset playback
+  stopAll();
+  stemBuffers = {};
+  stemBlobs = {};
 
   currentFile = file;
 }
@@ -71,11 +86,14 @@ function handleFile(file) {
 separateBtn.addEventListener('click', async () => {
   if (!currentFile) return;
   separateBtn.disabled = true;
-  separateBtn.textContent = '\u25B6 Uploading...';
+  separateBtn.textContent = '▶ Uploading...';
   await processFile(currentFile);
   separateBtn.disabled = false;
-  separateBtn.textContent = '\u25B6 Separate';
+  separateBtn.textContent = '▶ Separate';
 });
+
+// ── Play All button ──
+playAllBtn.addEventListener('click', () => playAll());
 
 // ── Spool animation ──
 function startSpools() {
@@ -102,6 +120,98 @@ function resetPeel() {
   if (grille) {
     grille.classList.remove('peeling');
     grille.style.removeProperty('--peel-progress');
+  }
+}
+
+// ── Web Audio multi‑stem playback ──
+async function setupStemBuffers() {
+  if (!stemBlobs || Object.keys(stemBlobs).length === 0) return;
+  if (!audioCtx) audioCtx = new AudioContext();
+  const names = ['vocals', 'drums', 'bass', 'other'];
+  for (const name of names) {
+    const blob = stemBlobs[name];
+    if (!blob) continue;
+    const buf = await blob.arrayBuffer();
+    stemBuffers[name] = await audioCtx.decodeAudioData(buf);
+  }
+  playAllBtn.style.display = 'block';
+  // Reveal mute buttons
+  document.querySelectorAll('.btn-mute').forEach(b => b.style.display = '');
+}
+
+async function playAll() {
+  if (isPlaying) {
+    stopAll();
+    return;
+  }
+
+  if (!audioCtx || audioCtx.state === 'closed') audioCtx = new AudioContext();
+  if (audioCtx.state === 'suspended') await audioCtx.resume();
+
+  // Build source + gain for each loaded stem
+  const names = ['vocals', 'drums', 'bass', 'other'];
+  activeSources = [];
+  stemGains = {};
+
+  for (const name of names) {
+    const buf = stemBuffers[name];
+    if (!buf) continue;
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    const gain = audioCtx.createGain();
+    gain.gain.value = 1;
+    src.connect(gain);
+    gain.connect(audioCtx.destination);
+    src.start(0);
+    activeSources.push(src);
+    stemGains[name] = gain;
+
+    // Update mute button to unmuted state
+    const btn = document.querySelector(`.btn-mute[data-stem="${name}"]`);
+    if (btn) {
+      btn.textContent = '🔊';
+      btn.classList.remove('muted');
+    }
+  }
+
+  isPlaying = true;
+  playAllBtn.textContent = '⏹ Stop';
+
+  // Auto‑stop when all sources end (use the longest buffer)
+  const maxDuration = Math.max(...activeSources.map(s => s.buffer ? s.buffer.duration : 0), 0);
+  setTimeout(() => {
+    if (isPlaying) stopAll();
+  }, (maxDuration + 0.5) * 1000);
+
+  // also stop when any source naturally ends
+  activeSources.forEach(src => {
+    src.onended = () => {
+      if (isPlaying && activeSources.every(s => s.playbackState === 'finished' || s.playbackState === undefined)) {
+        stopAll();
+      }
+    };
+  });
+}
+
+function stopAll() {
+  activeSources.forEach(src => {
+    try { src.stop(); } catch (e) { /* already stopped */ }
+  });
+  activeSources = [];
+  stemGains = {};
+  isPlaying = false;
+  playAllBtn.textContent = '▶ Play All';
+}
+
+function toggleStemMute(stemName) {
+  const gain = stemGains[stemName];
+  if (!gain) return;
+  const muted = gain.gain.value === 0;
+  gain.gain.value = muted ? 1 : 0;
+  const btn = document.querySelector(`.btn-mute[data-stem="${stemName}"]`);
+  if (btn) {
+    btn.textContent = muted ? '🔊' : '🔇';
+    btn.classList.toggle('muted', !muted);
   }
 }
 
@@ -188,6 +298,7 @@ async function processFile(file) {
     // 4. Unzip and display
     const zip = await JSZip.loadAsync(zipBlob);
     const stems = {};
+    stemBlobs = {};
     const order = job.stem_names || ['vocals.mp3', 'drums.mp3', 'bass.mp3', 'other.mp3'];
 
     for (const name of order) {
@@ -196,9 +307,11 @@ async function processFile(file) {
       const blob = await file.async('blob');
       const stemName = name.replace(/\.mp3$/, '');
       stems[stemName] = URL.createObjectURL(blob);
+      stemBlobs[stemName] = blob;
     }
 
     showStems(stems);
+    setupStemBuffers();
 
     statusEl.textContent = `Done! ${job.stem_count} stems extracted.`;
     statusEl.style.color = '#27ae60';
@@ -225,7 +338,8 @@ function showStems(stemUrls) {
         <div class="stem-card">
           <h3 style="color:var(--accent)">${cfg.label}</h3>
           <audio controls src="${stemUrls[name]}"></audio>
-          <button class="btn-stem-dl" onclick="downloadStem('${name}')">Download</button>
+          <button class="btn-stem-dl" onclick="window._sdemux_downloadStem('${name}')">Download</button>
+          <button class="btn-mute" data-stem="${name}" onclick="window._sdemux_toggleMute('${name}')" style="display:none">&#128264;</button>
         </div>`;
     })
     .join('');
@@ -234,13 +348,18 @@ function showStems(stemUrls) {
 
 // ── Per-stem download ──
 window._stemUrls = {};
-window.downloadStem = function(name) {
+window._sdemux_downloadStem = function(name) {
   const url = window._stemUrls[name];
   if (!url) return;
   const a = document.createElement('a');
   a.href = url;
   a.download = `${name}.mp3`;
   a.click();
+};
+
+// ── Mute toggle (called from onclick in stem cards) ──
+window._sdemux_toggleMute = function(name) {
+  toggleStemMute(name);
 };
 
 // ── ZIP download (re-zip client-side) ──

@@ -405,6 +405,51 @@ body {
   background: #555;
 }
 
+/* ── Play All / Stop button ── */
+.btn-play {
+  padding: 10px 28px;
+  background: var(--accent);
+  color: #fff;
+  border: 2px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+  letter-spacing: 0.3px;
+  transition: background 0.2s, transform 0.1s;
+}
+.btn-play:hover {
+  background: var(--accent-hover);
+  transform: translateY(-1px);
+}
+
+/* ── Mute toggle on stem cards ── */
+.btn-mute {
+  background: none;
+  border: 2px solid var(--border);
+  border-radius: 50%;
+  width: 32px;
+  height: 32px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 6px;
+  transition: background 0.15s, border-color 0.15s;
+  padding: 0;
+  line-height: 1;
+}
+.btn-mute:hover {
+  background: var(--bg);
+  border-color: var(--accent);
+}
+.btn-mute.muted {
+  background: var(--accent-dim);
+  border-color: var(--accent-dim);
+  color: #fff;
+}
+
 /* ── Ventilation slots (bottom) ── */
 .vent-slots {
   display: flex;
