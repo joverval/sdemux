@@ -60,6 +60,12 @@ dropZone.addEventListener('drop', (e) => {
 });
 
 function handleFile(file) {
+  const MAX_SIZE = 10 * 1024 * 1024;  // 10 MB
+  if (file.size > MAX_SIZE) {
+    statusEl.textContent = 'File too large. Maximum is 10 MB.';
+    return;
+  }
+
   if (!file.type.startsWith('audio/') && !file.name.match(/\.(wav|mp3|m4a|ogg|flac)$/i)) {
     statusEl.textContent = 'Unsupported file type. Use MP3 or WAV.';
     return;
